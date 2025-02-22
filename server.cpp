@@ -191,19 +191,32 @@ static void handle_read(Conn *conn) {
 }
 
 int main() {
-    // the listening socket
+    // obtain server file descriptor
+    // AF_INET is for IPv4. Use AF_INET6 for IPv6 or dual-stack sockets.
+    // SOCK_STREAM is for TCP. Use SOCK_DGRAM for UDP.
+    // The 3rd argument is 0 and useless for our purposes.
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         die("socket()");
     }
+    // The effect of SO_REUSEADDR is important: if it’s not set to 1, a server program cannot bind to the same IP:port 
+    // it was using after a restart. This is generally undesirable TCP behavior. You should enable SO_REUSEADDR for all listening sockets!
     int val = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
     // bind
+    // struct sockaddr_in holds an IPv4:port pair stored as big-endian numbers, converted by htons() and htonl(). 
+    // For example, 1.2.3.4 is represented by htonl(0x01020304).
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = ntohs(1234);
     addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
+
+    // htonl() reads “Host to Network Long”. 
+    // “Host” means the CPU endian. “Network” means big-endian. 
+    // “Long” actually means uint32_t, not the long type. On little-endian CPUs, it’s a byte swap. On big-endian CPUs, it does nothing. 
+
+    // bind to PORT
     int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("bind()");
@@ -227,6 +240,7 @@ int main() {
         poll_args.clear();
         // put the listening sockets in the first position
         struct pollfd pfd = {fd, POLLIN, 0};
+        // start with server file descriptor
         poll_args.push_back(pfd);
         // the rest are connection sockets
         for (Conn *conn : fd2conn) {
@@ -274,10 +288,12 @@ int main() {
             }
 
             Conn *conn = fd2conn[poll_args[i].fd];
+            // bitwise AND to check whether POLLIN bit is set
             if (ready & POLLIN) {
                 assert(conn->want_read);
                 handle_read(conn);  // application logic
             }
+            // bitwise AND to check whether POLLOUT bit is set
             if (ready & POLLOUT) {
                 assert(conn->want_write);
                 handle_write(conn); // application logic

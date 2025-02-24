@@ -15,7 +15,12 @@
 // C++
 #include <string>
 #include <vector>
-#include <map>
+// proj
+#include "src/hashtable.h"
+
+
+#define container_of(ptr, T, member) \
+    ((T *)( (char *)ptr - offsetof(T, member) ))
 
 
 static void msg(const char *msg) {
@@ -62,7 +67,8 @@ struct Conn {
 };
 
 // append to the back
-static void buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len) {
+static void
+buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len) {
     buf.insert(buf.end(), data, data + len);
 }
 
@@ -126,11 +132,9 @@ static int32_t
 parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out) {
     const uint8_t *end = data + size;
     uint32_t nstr = 0;
-
     if (!read_u32(data, end, nstr)) {
         return -1;
     }
-
     if (nstr > k_max_args) {
         return -1;  // safety limit
     }
@@ -145,11 +149,9 @@ parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out) {
             return -1;
         }
     }
-    
     if (data != end) {
         return -1;  // trailing garbage
     }
-
     return 0;
 }
 
@@ -168,22 +170,90 @@ struct Response {
     std::vector<uint8_t> data;
 };
 
-// placeholder; implemented later
-static std::map<std::string, std::string> g_data;
+// global states
+static struct {
+    HMap db;    // top-level hashtable
+} g_data;
+
+// KV pair for the top-level hashtable
+struct Entry {
+    struct HNode node;  // hashtable node
+    std::string key;
+    std::string val;
+};
+
+// equality comparison for `struct Entry`
+static bool entry_eq(HNode *lhs, HNode *rhs) {
+    struct Entry *le = container_of(lhs, struct Entry, node);
+    struct Entry *re = container_of(rhs, struct Entry, node);
+    return le->key == re->key;
+}
+
+// FNV hash
+static uint64_t str_hash(const uint8_t *data, size_t len) {
+    uint32_t h = 0x811C9DC5;
+    for (size_t i = 0; i < len; i++) {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
+
+static void do_get(std::vector<std::string> &cmd, Response &out) {
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable lookup
+    HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!node) {
+        out.status = RES_NX;
+        return;
+    }
+    // copy the value
+    const std::string &val = container_of(node, Entry, node)->val;
+    assert(val.size() <= k_max_msg);
+    out.data.assign(val.begin(), val.end());
+}
+
+static void do_set(std::vector<std::string> &cmd, Response &) {
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable lookup
+    HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (node) {
+        // found, update the value
+        container_of(node, Entry, node)->val.swap(cmd[2]);
+    } else {
+        // not found, allocate & insert a new pair
+        Entry *ent = new Entry();
+        ent->key.swap(key.key);
+        ent->node.hcode = key.node.hcode;
+        ent->val.swap(cmd[2]);
+        hm_insert(&g_data.db, &ent->node);
+    }
+}
+
+static void do_del(std::vector<std::string> &cmd, Response &) {
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable delete
+    HNode *node = hm_delete(&g_data.db, &key.node, &entry_eq);
+    if (node) { // deallocate the pair
+        delete container_of(node, Entry, node);
+    }
+}
 
 static void do_request(std::vector<std::string> &cmd, Response &out) {
     if (cmd.size() == 2 && cmd[0] == "get") {
-        auto it = g_data.find(cmd[1]);
-        if (it == g_data.end()) {
-            out.status = RES_NX;    // not found
-            return;
-        }
-        const std::string &val = it->second;
-        out.data.assign(val.begin(), val.end());
+        return do_get(cmd, out);
     } else if (cmd.size() == 3 && cmd[0] == "set") {
-        g_data[cmd[1]].swap(cmd[2]);
+        return do_set(cmd, out);
     } else if (cmd.size() == 2 && cmd[0] == "del") {
-        g_data.erase(cmd[1]);
+        return do_del(cmd, out);
     } else {
         out.status = RES_ERR;       // unrecognized command
     }
@@ -302,24 +372,14 @@ int main() {
     if (fd < 0) {
         die("socket()");
     }
-    // The effect of SO_REUSEADDR is important: if it’s not set to 1, a server program cannot bind to the same IP:port 
-    // it was using after a restart. This is generally undesirable TCP behavior. You should enable SO_REUSEADDR for all listening sockets!
     int val = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
     // bind
-    // struct sockaddr_in holds an IPv4:port pair stored as big-endian numbers, converted by htons() and htonl(). 
-    // For example, 1.2.3.4 is represented by htonl(0x01020304).
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = ntohs(1234);
     addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
-
-    // htonl() reads “Host to Network Long”. 
-    // “Host” means the CPU endian. “Network” means big-endian. 
-    // “Long” actually means uint32_t, not the long type. On little-endian CPUs, it’s a byte swap. On big-endian CPUs, it does nothing. 
-
-    // bind to PORT
     int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("bind()");
@@ -343,7 +403,6 @@ int main() {
         poll_args.clear();
         // put the listening sockets in the first position
         struct pollfd pfd = {fd, POLLIN, 0};
-        // start with server file descriptor
         poll_args.push_back(pfd);
         // the rest are connection sockets
         for (Conn *conn : fd2conn) {
@@ -391,12 +450,10 @@ int main() {
             }
 
             Conn *conn = fd2conn[poll_args[i].fd];
-            // bitwise AND to check whether POLLIN bit is set
             if (ready & POLLIN) {
                 assert(conn->want_read);
                 handle_read(conn);  // application logic
             }
-            // bitwise AND to check whether POLLOUT bit is set
             if (ready & POLLOUT) {
                 assert(conn->want_write);
                 handle_write(conn); // application logic
@@ -410,6 +467,5 @@ int main() {
             }
         }   // for each connection sockets
     }   // the event loop
-    
     return 0;
 }

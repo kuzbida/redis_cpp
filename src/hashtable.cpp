@@ -6,6 +6,12 @@
 // n must be a power of 2
 static void h_init(HTab *htab, size_t n) {
     assert(n > 0 && ((n - 1) & n) == 0); // check if n is power of 2. n % 2 == 0
+    // use calloc instead of malloc - to avoid O(n) initialization
+    // After allocating a hashtable, the slots must be initialized. 
+    // So triggering a resize still seems to be O(N). This is avoided with calloc(). 
+    // When allocating a large array, calloc() gets the memory from mmap(), 
+    // and the pages from mmap() are allocated and zeroed on the first access, 
+    // which is effectively a progressively zero-initialized array.
     htab->tab = (HNode **)calloc(n, sizeof(HNode *));
     htab->mask = n - 1;
     htab->size = 0;

@@ -5,7 +5,7 @@
 
 // n must be a power of 2
 static void h_init(HTab *htab, size_t n) {
-    assert(n > 0 && ((n - 1) & n) == 0); // check if n is power of 2. n % 2 == 0
+    assert(n > 0 && ((n - 1) & n) == 0);
     htab->tab = (HNode **)calloc(n, sizeof(HNode *));
     htab->mask = n - 1;
     htab->size = 0;
@@ -13,7 +13,7 @@ static void h_init(HTab *htab, size_t n) {
 
 // hashtable insertion
 static void h_insert(HTab *htab, HNode *node) {
-    size_t pos = node->hcode & htab->mask; // the same as modulo (hcode % mask)
+    size_t pos = node->hcode & htab->mask;
     HNode *next = htab->tab[pos];
     node->next = next;
     htab->tab[pos] = node;
@@ -122,4 +122,19 @@ void hm_clear(HMap *hmap) {
 
 size_t hm_size(HMap *hmap) {
     return hmap->newer.size + hmap->older.size;
+}
+
+static bool h_foreach(HTab *htab, bool (*f)(HNode *, void *), void *arg) {
+    for (size_t i = 0; htab->mask != 0 && i <= htab->mask; i++) {
+        for (HNode *node = htab->tab[i]; node != NULL; node = node->next) {
+            if (!f(node, arg)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void hm_foreach(HMap *hmap, bool (*f)(HNode *, void *), void *arg) {
+    h_foreach(&hmap->newer, f, arg) && h_foreach(&hmap->older, f, arg);
 }

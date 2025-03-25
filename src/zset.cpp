@@ -2,8 +2,8 @@
 #include <string.h>
 #include <stdlib.h>
 // proj
-#include "./common.h"
-#include "./zset.h"
+#include "zset.h"
+#include "common.h"
 
 
 static ZNode *znode_new(const char *name, size_t len, double score) {

@@ -1,3 +1,6 @@
 .vscode/
 server
 client
+server.dSYM/
+src/test_heap
+src/test_heap.dSYM/

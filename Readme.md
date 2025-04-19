@@ -1,6 +1,6 @@
 # Build Server
 ```
-g++ -std=c++17 -g server.cpp src/avl.cpp src/hashtable.cpp src/zset.cpp src/heap.cpp -o server
+g++ -std=c++17 -g server.cpp src/avl.cpp src/hashtable.cpp src/zset.cpp src/heap.cpp src/thread_pool.cpp -o server
 ```
 
 # Build Client
